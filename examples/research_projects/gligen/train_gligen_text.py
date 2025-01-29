@@ -366,6 +366,8 @@ def main(args):
     print("loading pretrained models etc and cache them into: ", cache_dir)
     #pretrained_model_name_or_path = "gligen/diffusers-generation-text-box" #the one from hgf
     pretrained_model_name_or_path = "masterful/gligen-1-4-generation-text-box" #the one original
+    #pretrained_unet = "Hzzone/GLIGEN_COCO" #pretrained by the creator of this script
+    # maybe i need the unet from Hzzones repo
     print("Loading tokenizer")
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer", cache_dir=cache_dir)
     print("Loading noise scheduler")
