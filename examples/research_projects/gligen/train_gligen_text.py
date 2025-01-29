@@ -55,12 +55,14 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
     if len(samples) == 0:
         print(f'No samples found in {val_folder_path}')
         return
-    print(f'Found {len(samples)} samples in {val_folder_path} bot getting only the first one')
+    print(f'Found {len(samples)} samples in {val_folder_path} but getting only the first one')
+    
+    #add support for multiple val samples
     sample = samples[0]
     scene = load_txt_to_dto(os.path.join(val_folder_path, sample))    
     bb_file = sample[:-4] + '.bb'
     bounding_boxes = load_bounding_boxes(os.path.join(val_folder_path, bb_file))
-    
+    image_file = sample[:-4] + '.png'
     captions = []  
     for object in scene.objects:
         rotation = object.rot
@@ -73,6 +75,16 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
     
     prompt = scene.prompt
     boxes = bounding_boxes
+    
+    #todo we can log now to wandb but i have to implement it!
+    # validation_image = Image.open(image_file).convert("RGB")
+    
+    # val_log = {}
+    # val_log["prompt"] = prompt
+    # val_log["captions"] = captions
+    # val_log["boxes"] = boxes
+    # val_log["validation_image"] = validation_image
+    
     
     unet = accelerator.unwrap_model(unet)
     vae.to(accelerator.device, dtype=torch.float32)
@@ -97,14 +109,17 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
     
     gligen_phrases = captions
+    inf_steps = 50
+    if os.name == 'nt' or platform.system() == 'Windows':
+        inf_steps = 1
     images = pipeline(
         prompt=prompt,
         gligen_phrases=gligen_phrases,
         gligen_boxes=boxes,
         gligen_scheduled_sampling_beta=1.0,
         output_type="pil",
-        num_inference_steps=50,
-        negative_prompt="artifacts, blurry, smooth texture, bad quality, distortions, unrealistic, distorted image, bad proportions, duplicate",
+        num_inference_steps=inf_steps,
+        negative_prompt="",
         num_images_per_prompt=4,
         generator=generator,
     ).images
@@ -113,6 +128,9 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
         os.path.join(args.output_dir, "images", f"generated-images-{step:06d}-{accelerator.process_index:02d}.png")
     )
 
+    #todo we can log now to wandb
+    
+    
     vae.to(accelerator.device, dtype=weight_dtype)
 
 
@@ -741,4 +759,12 @@ if __name__ == "__main__":
     print("starting")
     #https://huggingface.co/gligen/diffusers-generation-text-box
     args = parse_args()
+    import os
+    import platform
+
+    # Check if the operating system is Windows and disable triton (because that kills everything)
+    if os.name == 'nt' or platform.system() == 'Windows':
+        print("Running on Windows disable triton")
+        import torch._dynamo
+        torch._dynamo.config.suppress_errors = True
     main(args)
