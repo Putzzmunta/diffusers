@@ -43,6 +43,7 @@ logger = get_logger(__name__)
 
 from common_api_schnauby.camera_vision_utils import load_txt_to_dto as load_txt_to_dto
 from common_api_schnauby.dtos import *
+from datasets_schnauby.datasets import load_bounding_boxes
 
 @torch.no_grad()
 def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, accelerator, step, weight_dtype, val_folder_path):
@@ -50,15 +51,15 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
         print("generate test images...")
     
     
-    samples = [f for f in os.listdir(folder_path) if f.endswith('.txt')]
+    samples = [f for f in os.listdir(val_folder_path) if f.endswith('.txt')]
     if len(samples) == 0:
-        print(f'No samples found in {folder_path}')
+        print(f'No samples found in {val_folder_path}')
         return
-    print(f'Found {len(samples)} samples in {folder_path} bot getting only the first one')
+    print(f'Found {len(samples)} samples in {val_folder_path} bot getting only the first one')
     sample = samples[0]
-    scene = load_txt_to_dto(os.path.join(sval_folder_path, sample))    
+    scene = load_txt_to_dto(os.path.join(val_folder_path, sample))    
     bb_file = sample[:-4] + '.bb'
-    bounding_boxes = load_bounding_boxes(os.path.join(folder_path, bb_file))
+    bounding_boxes = load_bounding_boxes(os.path.join(val_folder_path, bb_file))
     
     captions = []  
     for object in scene.objects:
@@ -66,11 +67,12 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
         rotation_angles = (rotation.x, rotation.y, rotation.z)
         caption = f"A {object.form.size.name} {object.form.color.name} {object.form.type.name} with rotation {rotation_angles}"     
         # copied from make_datasets.py
-        captions.append(text_embeddings_before_projection)
+        captions.append(caption)
 
     assert len(captions) == len(bounding_boxes)
     
     prompt = scene.prompt
+    boxes = bounding_boxes
     
     unet = accelerator.unwrap_model(unet)
     vae.to(accelerator.device, dtype=torch.float32)
@@ -344,7 +346,8 @@ def main(args):
     from transformers import CLIPTextModel, CLIPTokenizer
     cache_dir = "/home/yschnaubelt/models_cache"
     print("loading pretrained models etc and cache them into: ", cache_dir)
-    pretrained_model_name_or_path = "gligen/diffusers-generation-text-box"
+    #pretrained_model_name_or_path = "gligen/diffusers-generation-text-box" #the one from hgf
+    pretrained_model_name_or_path = "masterful/gligen-1-4-generation-text-box" #the one original
     print("Loading tokenizer")
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer", cache_dir=cache_dir)
     print("Loading noise scheduler")
@@ -433,6 +436,7 @@ def main(args):
             args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
+    print("setup: optimizer class")
     optimizer_class = torch.optim.AdamW
     # Optimizer creation
     for n, m in unet.named_modules():
@@ -456,10 +460,10 @@ def main(args):
 
     from datasets_schnauby.datasets import BoundingBoxDataset
     
-    print("Loading clip encoder")
+    print("Loading clip encoder to cuda")
     encoder=text_encoder.cuda()    
-
-    train_dataset = BoundingBoxDataset(args.data_path, tokenizer, encoder)
+    print("Loading dataset")
+    train_dataset = BoundingBoxDataset(args.data_path_training, tokenizer, encoder)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
