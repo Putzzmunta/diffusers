@@ -41,11 +41,37 @@ if is_wandb_available():
 
 logger = get_logger(__name__)
 
+from common_api_schnauby.camera_vision_utils import load_txt_to_dto as load_txt_to_dto
+from common_api_schnauby.dtos import *
 
 @torch.no_grad()
-def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, accelerator, step, weight_dtype):
+def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, accelerator, step, weight_dtype, val_folder_path):
     if accelerator.is_main_process:
         print("generate test images...")
+    
+    
+    samples = [f for f in os.listdir(folder_path) if f.endswith('.txt')]
+    if len(samples) == 0:
+        print(f'No samples found in {folder_path}')
+        return
+    print(f'Found {len(samples)} samples in {folder_path} bot getting only the first one')
+    sample = samples[0]
+    scene = load_txt_to_dto(os.path.join(sval_folder_path, sample))    
+    bb_file = sample[:-4] + '.bb'
+    bounding_boxes = load_bounding_boxes(os.path.join(folder_path, bb_file))
+    
+    captions = []  
+    for object in scene.objects:
+        rotation = object.rot
+        rotation_angles = (rotation.x, rotation.y, rotation.z)
+        caption = f"A {object.form.size.name} {object.form.color.name} {object.form.type.name} with rotation {rotation_angles}"     
+        # copied from make_datasets.py
+        captions.append(text_embeddings_before_projection)
+
+    assert len(captions) == len(bounding_boxes)
+    
+    prompt = scene.prompt
+    
     unet = accelerator.unwrap_model(unet)
     vae.to(accelerator.device, dtype=torch.float32)
 
@@ -67,15 +93,8 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
         generator = None
     else:
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-
-    prompt = "A realistic image of landscape scene depicting a green car parking on the left of a blue truck, with a red air balloon and a bird in the sky"
-    boxes = [
-        [0.041015625, 0.548828125, 0.453125, 0.859375],
-        [0.525390625, 0.552734375, 0.93359375, 0.865234375],
-        [0.12890625, 0.015625, 0.412109375, 0.279296875],
-        [0.578125, 0.08203125, 0.857421875, 0.27734375],
-    ]
-    gligen_phrases = ["a green car", "a blue truck", "a red air balloon", "a bird"]
+    
+    gligen_phrases = captions
     images = pipeline(
         prompt=prompt,
         gligen_phrases=gligen_phrases,
@@ -98,21 +117,21 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a ControlNet training script.")
     parser.add_argument(
-        "--data_path",
+        "--data_path_training",
         type=str,
-        default="coco_train2017.pth",
-        help="Path to training dataset.",
+        required=True,
+        help="Path to training dataset folder.",
     )
     parser.add_argument(
-        "--image_path",
+        "--data_path_validation",
         type=str,
-        default="coco_train2017.pth",
-        help="Path to training images.",
+        required=True,
+        help="Path to validation dataset folder.",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="controlnet-model",
+        required=True,
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
@@ -276,6 +295,7 @@ def parse_args(input_args=None):
         ),
     )
     args = parser.parse_args()
+    print("lets go args are parsed")
     return args
 
 
@@ -322,14 +342,19 @@ def main(args):
     # text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
     # Load scheduler and models
     from transformers import CLIPTextModel, CLIPTokenizer
-
-    pretrained_model_name_or_path = "masterful/gligen-1-4-generation-text-box"
-    tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
-    noise_scheduler = DDPMScheduler.from_pretrained(pretrained_model_name_or_path, subfolder="scheduler")
-    text_encoder = CLIPTextModel.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder")
-
-    vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae")
-    unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
+    cache_dir = "/home/yschnaubelt/models_cache"
+    print("loading pretrained models etc and cache them into: ", cache_dir)
+    pretrained_model_name_or_path = "gligen/diffusers-generation-text-box"
+    print("Loading tokenizer")
+    tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer", cache_dir=cache_dir)
+    print("Loading noise scheduler")
+    noise_scheduler = DDPMScheduler.from_pretrained(pretrained_model_name_or_path, subfolder="scheduler", cache_dir=cache_dir)
+    print("Loading text encoder")
+    text_encoder = CLIPTextModel.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder", cache_dir=cache_dir)
+    print("Loading vae")
+    vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae",cache_dir=cache_dir)
+    print("Loading unet")
+    unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet",cache_dir=cache_dir)
 
     # Taken from [Sayak Paul's Diffusers PR #6511](https://github.com/huggingface/diffusers/pull/6511/files)
     def unwrap_model(model):
@@ -429,17 +454,12 @@ def main(args):
         eps=args.adam_epsilon,
     )
 
-    from dataset import COCODataset
+    from datasets_schnauby.datasets import BoundingBoxDataset
+    
+    print("Loading clip encoder")
+    encoder=text_encoder.cuda()    
 
-    train_dataset = COCODataset(
-        data_path=args.data_path,
-        image_path=args.image_path,
-        tokenizer=tokenizer,
-        image_size=args.resolution,
-        max_boxes_per_data=30,
-    )
-
-    print("num samples: ", len(train_dataset))
+    train_dataset = BoundingBoxDataset(args.data_path, tokenizer, encoder)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -561,6 +581,8 @@ def main(args):
         accelerator,
         global_step,
         weight_dtype,
+        args.data_path_validation,
+        
     )
 
     # image_logs = None
@@ -663,6 +685,7 @@ def main(args):
                         accelerator,
                         global_step,
                         weight_dtype,
+                       args.data_path_validation,
                     )
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -711,5 +734,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    print("starting")
+    #https://huggingface.co/gligen/diffusers-generation-text-box
     args = parse_args()
     main(args)
