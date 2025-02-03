@@ -309,6 +309,8 @@ def parse_args(input_args=None):
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
+    parser.add_argument("--train_from_scretch", action="store_true", default=False, help="If set to true, the fuser and position_net will be trained from scretch")
+    
     args = parser.parse_args()
     print("lets go args are parsed")
     return args
@@ -357,8 +359,6 @@ def main(args):
     # text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
     # Load scheduler and models
     from transformers import CLIPTextModel, CLIPTokenizer
-    import os
-
     # Get the current user's home directory path
     home_directory = os.path.expanduser("~")
     cache_dir = os.path.join(home_directory, "models_cache")
@@ -458,11 +458,14 @@ def main(args):
     optimizer_class = torch.optim.AdamW
     # Optimizer creation
     for n, m in unet.named_modules():
-        if ("fuser" in n) or ("position_net" in n):
-            import torch.nn as nn
+        if args.train_from_scretch:
+            #only train from scretch  if flag is set!
+            if ("fuser" in n) or ("position_net" in n):
+                import torch.nn as nn
 
-            if isinstance(m, (nn.Linear, nn.LayerNorm)):
-                m.reset_parameters()
+                if isinstance(m, (nn.Linear, nn.LayerNorm)):
+                    m.reset_parameters()
+                    logger.info(f"Resetting parameters of fuser and position net")
     params_to_optimize = []
     for n, p in unet.named_parameters():
         if ("fuser" in n) or ("position_net" in n):
