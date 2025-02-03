@@ -99,7 +99,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
             gligen_scheduled_sampling_beta=1.0,
             output_type="pil",
             num_inference_steps=inf_steps,
-            negative_prompt="",
+            #negative_prompt="", #it seems that having it set to "" is not that good...
             num_images_per_prompt=4,
             generator=generator,
         ).images
