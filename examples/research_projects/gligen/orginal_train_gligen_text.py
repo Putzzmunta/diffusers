@@ -41,19 +41,11 @@ if is_wandb_available():
 
 logger = get_logger(__name__)
 
-from common_api_schnauby.camera_vision_utils import load_txt_to_dto as load_txt_to_dto
-from common_api_schnauby.dtos import *
-from datasets_schnauby.datasets import load_bounding_boxes
-from PIL import Image
-import wandb
 
 @torch.no_grad()
-def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, accelerator, step, weight_dtype, val_folder_path):
-    print("Running validation")
-    
-    
-    print("setup the model")
-    
+def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, accelerator, step, weight_dtype):
+    if accelerator.is_main_process:
+        print("generate test images...")
     unet = accelerator.unwrap_model(unet)
     vae.to(accelerator.device, dtype=torch.float32)
 
@@ -75,104 +67,52 @@ def log_validation(vae, text_encoder, tokenizer, unet, noise_scheduler, args, ac
         generator = None
     else:
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-    
-    
-    samples = [f for f in os.listdir(val_folder_path) if f.endswith('.txt')]
-    if len(samples) == 0:
-        print(f'No samples found in {val_folder_path}')
-        return
-    print(f'Found {len(samples)} samples in {val_folder_path}')
-    
-    
-    formatted_images = [] #for wandb
-    
-    for sample in samples:
-        scene = load_txt_to_dto(os.path.join(val_folder_path, sample))    
-        bb_file = sample[:-4] + '.bb'
-        bounding_boxes = load_bounding_boxes(os.path.join(val_folder_path, bb_file))
-        image_file = sample[:-4] + '.png'
-        captions = []  
-        for object in scene.objects:
-            rotation = object.rot
-            if rotation is None:
-                rotation = Rotation(0, 0, 0)
-            rotation_angles = (rotation.x, rotation.y, rotation.z)
-            caption = f"A {object.form.size.name} {object.form.color.name} {object.form.type.name} with rotation {rotation_angles}"     
-            # copied from make_datasets.py
-            captions.append(caption)
 
-        boxes = bounding_boxes
-        gligen_phrases = captions
-        prompt = scene.prompt
-        
-        inf_steps = 50
-        if os.name == 'nt' or platform.system() == 'Windows':
-            inf_steps = 1
-        
-        images = None 
-        if len(bounding_boxes) == 0:
-            gligen_phrases = ["empty"]
-            boxes = [[0.0, 0.0, 1.0, 1.0]]
-       
-        print("Generating images")
-        print(gligen_phrases, bounding_boxes)
-        print(f"length is ok: {len(gligen_phrases) == len(boxes)}")
-        
-        images = pipeline(
-            prompt=prompt,
-            gligen_phrases=gligen_phrases,
-            gligen_boxes=boxes,
-            gligen_scheduled_sampling_beta=1.0,
-            output_type="pil",
-            num_inference_steps=inf_steps,
-            negative_prompt="",
-            num_images_per_prompt=4,
-            generator=generator,
-        ).images
-        
-        
-        skipSave = False
-        
-        for tracker in accelerator.trackers:
-            if tracker.name == "wandb":
-                skipSave = True
-                formatted_images.append(wandb.Image(Image.open(os.path.join(val_folder_path, image_file)), caption=f"ground trouth: {image_file}"))
-                for image in images:
-                        image = wandb.Image(image, caption=f"{prompt}: {image_file}")
-                        formatted_images.append(image)
-            
+    prompt = "A realistic image of landscape scene depicting a green car parking on the left of a blue truck, with a red air balloon and a bird in the sky"
+    boxes = [
+        [0.041015625, 0.548828125, 0.453125, 0.859375],
+        [0.525390625, 0.552734375, 0.93359375, 0.865234375],
+        [0.12890625, 0.015625, 0.412109375, 0.279296875],
+        [0.578125, 0.08203125, 0.857421875, 0.27734375],
+    ]
+    gligen_phrases = ["a green car", "a blue truck", "a red air balloon", "a bird"]
+    images = pipeline(
+        prompt=prompt,
+        gligen_phrases=gligen_phrases,
+        gligen_boxes=boxes,
+        gligen_scheduled_sampling_beta=1.0,
+        output_type="pil",
+        num_inference_steps=50,
+        negative_prompt="artifacts, blurry, smooth texture, bad quality, distortions, unrealistic, distorted image, bad proportions, duplicate",
+        num_images_per_prompt=4,
+        generator=generator,
+    ).images
+    os.makedirs(os.path.join(args.output_dir, "images"), exist_ok=True)
+    make_image_grid(images, 1, 4).save(
+        os.path.join(args.output_dir, "images", f"generated-images-{step:06d}-{accelerator.process_index:02d}.png")
+    )
 
-        if not skipSave:
-        # Save the generated images or upload to wandd
-            os.makedirs(os.path.join(args.output_dir, "images"), exist_ok=True)
-            make_image_grid(images, 1, 4).save(
-                os.path.join(args.output_dir, "images", f"generated-images-{step:06d}-{accelerator.process_index:02d}.png")
-            )
-    for tracker in accelerator.trackers:
-        if tracker.name == "wandb":
-            tracker.log({"validation": formatted_images})
-    #last line idk what it does
     vae.to(accelerator.device, dtype=weight_dtype)
-    print("Validation done")
+
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a ControlNet training script.")
     parser.add_argument(
-        "--data_path_training",
+        "--data_path",
         type=str,
-        required=True,
-        help="Path to training dataset folder.",
+        default="coco_train2017.pth",
+        help="Path to training dataset.",
     )
     parser.add_argument(
-        "--data_path_validation",
+        "--image_path",
         type=str,
-        required=True,
-        help="Path to validation dataset folder.",
+        default="coco_train2017.pth",
+        help="Path to training images.",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        required=True,
+        default="controlnet-model",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
@@ -336,7 +276,6 @@ def parse_args(input_args=None):
         ),
     )
     args = parser.parse_args()
-    print("lets go args are parsed")
     return args
 
 
@@ -383,22 +322,14 @@ def main(args):
     # text_encoder_cls = import_model_class_from_model_name_or_path(args.pretrained_model_name_or_path, args.revision)
     # Load scheduler and models
     from transformers import CLIPTextModel, CLIPTokenizer
-    cache_dir = "/tmp/models_cache"
-    print("loading pretrained models etc and cache them into: ", cache_dir)
-    #pretrained_model_name_or_path = "gligen/diffusers-generation-text-box" #the one from hgf
-    pretrained_model_name_or_path = "masterful/gligen-1-4-generation-text-box" #the one original
-    #pretrained_unet = "Hzzone/GLIGEN_COCO" #pretrained by the creator of this script
-    # maybe i need the unet from Hzzones repo
-    print("Loading tokenizer")
-    tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer", cache_dir=cache_dir)
-    print("Loading noise scheduler")
-    noise_scheduler = DDPMScheduler.from_pretrained(pretrained_model_name_or_path, subfolder="scheduler", cache_dir=cache_dir)
-    print("Loading text encoder")
-    text_encoder = CLIPTextModel.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder", cache_dir=cache_dir)
-    print("Loading vae")
-    vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae",cache_dir=cache_dir)
-    print("Loading unet")
-    unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet",cache_dir=cache_dir)
+
+    pretrained_model_name_or_path = "masterful/gligen-1-4-generation-text-box"
+    tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
+    noise_scheduler = DDPMScheduler.from_pretrained(pretrained_model_name_or_path, subfolder="scheduler")
+    text_encoder = CLIPTextModel.from_pretrained(pretrained_model_name_or_path, subfolder="text_encoder")
+
+    vae = AutoencoderKL.from_pretrained(pretrained_model_name_or_path, subfolder="vae")
+    unet = UNet2DConditionModel.from_pretrained(pretrained_model_name_or_path, subfolder="unet")
 
     # Taken from [Sayak Paul's Diffusers PR #6511](https://github.com/huggingface/diffusers/pull/6511/files)
     def unwrap_model(model):
@@ -477,7 +408,6 @@ def main(args):
             args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
         )
 
-    print("setup: optimizer class")
     optimizer_class = torch.optim.AdamW
     # Optimizer creation
     for n, m in unet.named_modules():
@@ -499,12 +429,17 @@ def main(args):
         eps=args.adam_epsilon,
     )
 
-    from datasets_schnauby.datasets import BoundingBoxDataset
-    
-    print("Loading clip encoder to cuda")
-    encoder=text_encoder.cuda()    
-    print("Loading dataset")
-    train_dataset = BoundingBoxDataset(args.data_path_training, tokenizer, encoder)
+    from dataset import COCODataset
+
+    train_dataset = COCODataset(
+        data_path=args.data_path,
+        image_path=args.image_path,
+        tokenizer=tokenizer,
+        image_size=args.resolution,
+        max_boxes_per_data=30,
+    )
+
+    print("num samples: ", len(train_dataset))
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -626,8 +561,6 @@ def main(args):
         accelerator,
         global_step,
         weight_dtype,
-        args.data_path_validation,
-        
     )
 
     # image_logs = None
@@ -730,7 +663,6 @@ def main(args):
                         accelerator,
                         global_step,
                         weight_dtype,
-                       args.data_path_validation,
                     )
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -779,18 +711,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    print("starting")
-    #https://huggingface.co/gligen/diffusers-generation-text-box
     args = parse_args()
-    import os
-    import platform
-
-    # Check if the operating system is Windows and disable triton (because that kills everything)
-    if os.name == 'nt' or platform.system() == 'Windows':
-        print("Running on Windows disable triton")
-        import torch._dynamo
-        torch._dynamo.config.suppress_errors = True
-    else:
-        import multiprocessing
-        multiprocessing.set_start_method('spawn')
     main(args)
