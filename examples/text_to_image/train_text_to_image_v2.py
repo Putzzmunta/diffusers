@@ -50,6 +50,10 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available, ma
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
+from sd_embed.embedding_funcs import get_weighted_text_embeddings_sd15 
+#https://github.com/huggingface/diffusers/issues/2136
+
+
 
 
 if is_wandb_available():
@@ -181,6 +185,7 @@ def load_image_text_dataset(data_dir_train, data_dir_val=None):
     return DatasetDict(dict_dataset)
 
 
+
 def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch):
     logger.info("Running validation... ")
 
@@ -215,7 +220,8 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
             autocast_ctx = torch.autocast(accelerator.device.type)
 
         with autocast_ctx:
-            image = pipeline(args.validation_prompts[i], num_inference_steps=20, generator=generator).images[0]
+            (prompt_embeds, prompt_neg_embeds) = get_weighted_text_embeddings_sd15(pipeline, prompt = args.validation_prompts[i], neg_prompt = "")
+            image = pipeline(prompt_embeds=prompt_embeds, negative_prompt_embeds=prompt_neg_embeds, num_inference_steps=20, generator=generator).images[0]
 
         images.append(image)
 
